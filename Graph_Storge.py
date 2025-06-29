@@ -3,15 +3,7 @@ import os
 from neo4j import GraphDatabase
 from tqdm import tqdm
 import re
-# --- Neo4j 连接配置 ---
-# 请替换为你的 Neo4j 服务器地址、用户名和密码
-URI = "bolt://localhost:7687"
-USERNAME = "neo4j"
-# !!! 重要：请将 'your_secret_password' 替换为你实际设置的 Neo4j 密码 !!!
-# 这是你在运行 Neo4j Docker 命令时设置的，或者在 Neo4j Desktop 中创建数据库时设置的。
-PASSWORD = "qwerqwer233" 
 
-# 初始化 Neo4j 驱动
 
 def create_node(tx, node_name, node_type):
     """

@@ -6,9 +6,7 @@ from tqdm import tqdm
 from docx import Document
 import re
 # --- 配置 Gemini LLM ---
-import google.generativeai as genai
 
-# 获取 Gemini API Key，优先从环境变量 GOOGLE_API_KEY 获取
 
 def perform_ner(sentence, nlp):
     """

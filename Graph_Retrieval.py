@@ -5,36 +5,6 @@ import json
 from neo4j import GraphDatabase
 import google.generativeai as genai
 
-# # --- Neo4j 连接配置 ---
-# URI = "bolt://localhost:7687"
-# USERNAME = "neo4j"
-# PASSWORD = "qwerqwer233" # !! 替换为你的Neo4j密码 !!
-
-# # 初始化 Neo4j 驱动
-# neo4j_driver = None
-# try:
-#     neo4j_driver = GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD))
-#     neo4j_driver.verify_connectivity()
-#     print("Neo4j 数据库连接成功！")
-# except Exception as e:
-#     print(f"无法连接到 Neo4j 数据库: {e}")
-#     exit()
-
-# # --- 配置 Gemini LLM ---
-# # 强烈建议使用环境变量来管理API密钥
-# # GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
-# GOOGLE_API_KEY = '' # 仅为示例，请替换
-# gemini_model = None
-# if GOOGLE_API_KEY:
-#     genai.configure(api_key=GOOGLE_API_KEY)
-#     try:
-#         gemini_model = genai.GenerativeModel('gemini-2.0-flash') # 推荐使用更强大的模型
-#         print("Gemini模型加载成功。")
-#     except Exception as e:
-#         print(f"警告: Gemini API Key存在，但模型加载失败: {e}")
-# else:
-#     print("警告: GOOGLE_API_KEY 未设置。无法进行智能查询生成。")
-
 
 def get_detailed_neo4j_schema(driver, max_retries=3):
     """
