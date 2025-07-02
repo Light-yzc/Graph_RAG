@@ -4,9 +4,11 @@ import os
 import json
 from tqdm import tqdm
 from docx import Document
+import mammoth
+import pypandoc
+import google.generativeai as genai
 import re
-# --- 配置 Gemini LLM ---
-
+import time
 
 def perform_ner(sentence, nlp):
     """
@@ -20,7 +22,7 @@ def perform_ner(sentence, nlp):
     for ent in doc.ents:
         # 过滤掉一些通用但可能不那么重要的实体类型，例如日期、数量
         # 根据你的文档类型和需求调整过滤规则
-        if ent.label_ in ["PERSON", "ORG", "GPE", "LOC", "PRODUCT", "EVENT"]: # 人、组织、地理政治实体、地点、产品、事件
+        if ent.label_ in ["PERSON", "ORG", "GPE", "LOC", "PRODUCT", "EVENT", "DATE", "MONEY", "QUANTITY"]: # 人、组织、地理政治实体、地点、产品、事件
             entities.append({"text": ent.text, "label": ent.label_})
     return entities
 
@@ -39,22 +41,49 @@ def extract_relations_with_llm_gemini(sentence, identified_entities, gemini_mode
 
     # 设计Prompt来引导LLM抽取关系。这是关键！
     # 示例中的Prompt是为通用LLM设计的，对于Gemini同样适用
-    prompt_content = f"""你是一个能够从文本中精确识别实体间关系的AI助手。请从给定的句子和实体中，识别所有明确的关系三元组（主体，关系，客体）。请确保关系是清晰、直接且基于文本的。
-
+    prompt_content = f"""你是一个能够从招投标文本中精确识别实体间关系的AI助手。请从给定的句子和已识别的实体中，识别所有明确的关系三元组（主体，关系，客体）。
 句子: {sentence}
 
 已识别的实体: {entity_str}
+请特别关注以下在招投标文件中常见的关系类型，并严格按照提供的示例格式进行抽取：
+- **项目信息**: (项目, 项目名称是, 名称), (项目, 项目编号是, 编号), (项目, 预算是, 金额), (项目, 服务范围是, 描述)
+- **参与方角色**: (项目, 招标人是, 组织), (项目, 招标代理机构是, 组织), (项目, 投标人是, 组织)
+- **时间/日期**: (事件/活动, 截止日期是, 日期), (服务, 期限是, 日期范围)
+- **财务信息**: (保证金, 金额是, 数值), (支付, 方式是, 描述)
+- **要求与条件**: (实体/服务, 要求是, 描述), (主体, 须提供, 材料/资质)
+- **位置信息**: (组织/项目, 位于, 地点/行政区划)
+
+请确保关系是清晰、直接且严格基于文本的。
+
+**示例：**
+- **句子**: "本招标项目为2024-2027年度重庆联通综合代维服务采购，项目编号：0701-2440CQ010207，招标人为中国联合网络通信有限公司重庆市分公司，招标代理机构为中技国际招标有限公司。"
+  **已识别实体**: '2024-2027年度重庆联通综合代维服务采购' (PRODUCT), '0701-2440CQ010207' (PRODUCT), '中国联合网络通信有限公司重庆市分公司' (ORG), '中技国际招标有限公司' (ORG)
+  **期望关系**:
+    - {{"subject": "本招标项目", "relation": "是", "object": "2024-2027年度重庆联通综合代维服务采购"}}
+    - {{"subject": "2024-2027年度重庆联通综合代维服务采购", "relation": "项目编号是", "object": "0701-2440CQ010207"}}
+    - {{"subject": "2024-2027年度重庆联通综合代维服务采购", "relation": "招标人是", "object": "中国联合网络通信有限公司重庆市分公司"}}
+    - {{"subject": "2024-2027年度重庆联通综合代维服务采购", "relation": "招标代理机构是", "object": "中技国际招标有限公司"}}
+- **句子**: "项目资金由招标人自筹，资金已落实。出资比例为100%，项目已具备招标条件。"
+  **已识别实体**: '项目资金' (MONEY), '招标人' (PERSON), '100%' (PERCENT)
+  **期望关系**:
+    - {{"subject": "项目资金", "relation": "由...自筹", "object": "招标人"}}
+    - {{"subject": "项目", "relation": "出资比例是", "object": "100%"}}
+- **句子**: "本项目为集中招标项目，为重庆联通40个区县分公司和轨道提供综合代维服务，代维主要包含：无线接入网、宽带网、传输及专线的维护工作，三年综合代维费预算总额为31267.26万元（不含增值税）。"
+  **已识别实体**: '重庆联通40个区县分公司' (ORG), '轨道' (LOC), '综合代维服务' (PRODUCT), '无线接入网' (PRODUCT), '宽带网' (PRODUCT), '传输' (PRODUCT), '专线' (PRODUCT), '三年' (DATE), '31267.26万元' (MONEY)
+  **期望关系**:
+    - {{"subject": "本项目", "relation": "提供", "object": "综合代维服务"}}
+    - {{"subject": "综合代维服务", "relation": "提供给", "object": "重庆联通40个区县分公司"}}
+    - {{"subject": "综合代维服务", "relation": "提供给", "object": "轨道"}}
+    - {{"subject": "综合代维服务", "relation": "包含", "object": "无线接入网的维护工作"}}
+    - {{"subject": "综合代维服务", "relation": "包含", "object": "宽带网的维护工作"}}
+    - {{"subject": "综合代维服务", "relation": "包含", "object": "传输及专线的维护工作"}}
+    - {{"subject": "三年综合代维费", "relation": "预算总额为", "object": "31267.26万元"}}
 
 请严格按照 JSON 数组格式返回结果。每个元素都是一个字典，包含 "subject", "relation", "object" 字段。
-例如：
-[
-  {{"subject": "李华", "relation": "就职于", "object": "清华大学"}},
-  {{"subject": "清华大学", "relation": "位于", "object": "北京"}}
-]
 如果未找到任何关系，返回空数组 []。
 不要包含任何额外文字或解释，只返回 JSON 数组。
 """
-
+    time.sleep(0.3)
     try:
         # 调用Gemini API
         response = gemini_model_client.generate_content(
@@ -93,7 +122,75 @@ def docx_to_txt(docx_path, txt_path):
     except Exception as e:
         print(f"转换 '{docx_path}' 时发生错误：{e}")
         return False
+
+
+def docx_to_markdown_mammoth(docx_path, md_path):
+    with open(docx_path, "rb") as docx_file:
+        # mammoth.convert_to_markdown 返回一个 ConversionResult 对象
+        result = mammoth.convert_to_markdown(docx_file)
+        markdown_text = result.value # 转换后的 Markdown 文本
+        # messages = result.messages # 转换过程中可能产生的警告或错误信息
+
+    with open(md_path, "w", encoding="utf-8") as md_file:
+        md_file.write(markdown_text)
+    print(f"'{docx_path}' 成功转换为 '{md_path}'。")
+    return markdown_text
+
+
+def docx_to_markdown(docx_path: str, output_md_path: str) -> str | None:
+    """
+    将指定的 .docx 文件转换为 Markdown 格式。
+
+    该函数会利用 pandoc 工具进行高质量的格式转换，特别适合处理包含
+    表格、列表等复杂结构的文档。
+
+    Args:
+        docx_path (str): 输入的 Word 文档 (.docx) 的文件路径。
+        output_md_path (str): 输出的 Markdown (.md) 文件的保存路径。
+
+    Returns:
+        str | None: 如果转换成功，则返回转换后的 Markdown 文本字符串，
+                    并将其保存到 output_md_path。
+                    如果转换失败（例如 pandoc 未安装或文件不存在），
+                    则返回 None。
+    """
+    # 确保输入文件存在
+    if not os.path.exists(docx_path):
+        print(f"[错误] 输入文件不存在: {docx_path}")
+        return None
+
+    # 自动创建输出文件所在的目录
+    output_dir = os.path.dirname(output_md_path)
+    if output_dir: # 确保路径中包含目录部分
+        os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        print(f"开始转换: {docx_path} -> {output_md_path}")
+        
+        # 1. 调用 pypandoc 将文件转换为字符串
+        # 'gfm' 代表 GitHub Flavored Markdown，是目前最通用的 Markdown 格式，对表格支持很好
+        # extra_args 可以用来传递 Pandoc 的命令行参数，例如 --wrap=none 可以防止自动换行
+        markdown_string = pypandoc.convert_file(
+            docx_path, 
+            'gfm', 
+            extra_args=['--wrap=none']
+        )
+        
+        # 2. 将转换后的字符串写入文件
+        with open(output_md_path, "w", encoding="utf-8") as f:
+            f.write(markdown_string)
+            
+        print(f"文档已成功转换为 Markdown 并保存。")
+        
+        # 3. 返回转换后的字符串
+        return markdown_string
+
+    except Exception as e:
+        print(f"使用 pypandoc 转换失败: {e}")
+        print("请确保您已经正确安装了 Pandoc 并且它在系统的 PATH 中。")
+        return None
     
+
 def load_text_file(txt_path):
     try:
         with open(txt_path, 'r', encoding='utf-8') as file:
@@ -220,22 +317,4 @@ def preprocess_text_optimized_v2(text, nlp):
 #     #     print(f"An unexpected error occurred: {e}")
 #     #     return []
 #     pass # 保持函数存在但无实际执行
-
-# --- 示例使用 ---
-if __name__ == "__main__":
-    # 为了让这个脚本独立运行，我们在这里定义简化的 step1_preprocess 函数
-    import re
-    
-    # 确保 data 目录存在并创建示例文件
-    if not os.path.exists('data'):
-        os.makedirs('data')
-    sample_txt_path = 'data/sample_document.txt'
-    docx_to_txt(r"E:\Code\Proj1\data\2024-2027年度重庆联通综合代维服务采购.docx", sample_txt_path)
-    # with open(sample_txt_path, 'w', encoding='utf-8') as f:
-    #     f.write("LangChain是一个强大的框架，用于开发由语言模型驱动的应用程序。它提供了一系列模块，可以帮助您构建检索增强生成（RAG）系统、智能体等等。\n")
-    #     f.write("李华是清华大学的教授。他在人工智能领域有很深的造诣。清华大学位于中国北京。")
-
-
-    document_content = load_text_file(sample_txt_path)
-    processed_sentences = preprocess_text(document_content)
 

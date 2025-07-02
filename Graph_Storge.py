@@ -53,65 +53,62 @@ def import_knowledge_to_neo4j(extracted_knowledge_file, driver):
     print(f"\n--- 开始导入 {len(all_extracted_knowledge)} 条知识记录到 Neo4j ---")
     with driver.session() as session:
         # **可选操作：清除现有数据 (仅在开发/测试时使用，生产环境慎用！)**
-        # 如果你每次都想重新开始一个空的图谱，可以取消注释下面这行。
-        # session.run("MATCH (n) DETACH DELETE n")
-        # print("已清除Neo4j中所有现有数据。")
+        session.run("MATCH (n) DETACH DELETE n")
+        print("已清除Neo4j中所有现有数据。")
 
-        # 为了避免重复处理，我们用一个集合来跟踪已经处理过的实体名称，并存储其类型
         known_entities = {} # {entity_name: entity_type}
 
-        for item in tqdm(all_extracted_knowledge, desc="导入知识到Neo4j"):
-            entities_in_sentence = item.get('entities', [])
-            relations_in_sentence = item.get('relations', [])
-
-            # 1. 处理本句中的所有实体
-            for entity in entities_in_sentence:
+        # 先收集所有实体并创建，避免在关系循环中重复创建事务
+        all_nodes_to_create = set() # (node_name, node_type)
+        for item in all_extracted_knowledge:
+            for entity in item.get('entities', []):
                 entity_name = entity['text']
-                # 规范化实体类型，例如将地理政治实体(GPE)和地点(LOC)都映射为 Location
                 node_type = entity['label'].replace('GPE', 'Location').replace('LOC', 'Location')
-                
-                if entity_name not in known_entities:
-                    known_entities[entity_name] = node_type
-                
-                session.write_transaction(create_node, entity_name, node_type)
-            
-            # 2. 处理本句中的所有关系
-            for relation in relations_in_sentence:
+                all_nodes_to_create.add((entity_name, node_type))
+                known_entities[entity_name] = node_type # 预填充 known_entities
+
+            # 同样，对于关系的主体和客体，如果它们不是直接抽取的实体，也会被视为 Concept
+            for relation in item.get('relations', []):
                 subject_name = relation['subject']
                 object_name = relation['object']
-                # 关系类型通常不含空格，统一替换为空格
-                relation_type = relation['relation'].replace(" ", "_").upper() # 大写通常是关系的惯例
-                for relation in relations_in_sentence:
-                    subject_name = relation['subject']
-                    object_name = relation['object']
-                    
-                    # --- 这里是修改的关键部分 ---
-                    # 对关系类型进行更彻底的清洗和规范化
-                    relation_type_raw = relation['relation']
-                    # 1. 替换空格为下划线
-                    cleaned_relation_type = relation_type_raw.replace(" ", "_")
-                    # 2. 移除所有非字母、数字、下划线的字符
-                    #    这个正则表达式会保留汉字、英文字母、数字和下划线
-                    cleaned_relation_type = re.sub(r'[^\w\u4e00-\u9fa5]+', '', cleaned_relation_type) # \u4e00-\u9fa5 是中文Unicode范围
-                    # 3. 转换为大写（可选，但推荐保持一致性）
-                    relation_type = cleaned_relation_type.upper() 
-                    
-                    # 确保关系类型不是空的，如果清理后变空，可能需要给个默认值或跳过
-                    if not relation_type:
-                        print(f"警告: 关系类型 '{relation_type_raw}' 清理后为空，跳过此关系。")
-                        continue
-                # 尝试从已知实体中获取主体和客体的类型
-                # 如果LLM抽取的实体不在NER列表中，这里会默认为 'Concept'
-                sub_type = known_entities.get(subject_name, "Concept")
-                obj_type = known_entities.get(object_name, "Concept")
-
-                # 如果实体是全新的（LLM抽取但NER未识别），也需要创建其节点
                 if subject_name not in known_entities:
-                     session.write_transaction(create_node, subject_name, sub_type)
-                     known_entities[subject_name] = sub_type
+                    # 假定这些非NER抽取的subject/object是Concept
+                    all_nodes_to_create.add((subject_name, "Concept"))
+                    known_entities[subject_name] = "Concept"
                 if object_name not in known_entities:
-                     session.write_transaction(create_node, object_name, obj_type)
-                     known_entities[object_name] = obj_type
+                    all_nodes_to_create.add((object_name, "Concept"))
+                    known_entities[object_name] = "Concept"
+
+        # 批量创建所有节点
+        print("正在创建所有节点...")
+        for node_name, node_type in tqdm(all_nodes_to_create, desc="创建节点"):
+            session.write_transaction(create_node, node_name, node_type)
+
+        # 然后再处理关系
+        print("正在创建所有关系...")
+        for item in tqdm(all_extracted_knowledge, desc="创建关系"):
+            relations_in_sentence = item.get('relations', [])
+
+            for relation in relations_in_sentence: # <-- 这里移除了多余的嵌套循环
+                subject_name = relation['subject']
+                object_name = relation['object']
+
+                # 对关系类型进行更彻底的清洗和规范化
+                relation_type_raw = relation['relation']
+                # 1. 替换空格为下划线
+                cleaned_relation_type = relation_type_raw.replace(" ", "_")
+                # 2. 移除所有非字母、数字、下划线的字符 (保留中文)
+                cleaned_relation_type = re.sub(r'[^\w\u4e00-\u9fa5]+', '', cleaned_relation_type)
+                # 3. 转换为大写（可选，但推荐保持一致性）
+                relation_type = cleaned_relation_type.upper()
+
+                if not relation_type:
+                    print(f"警告: 关系类型 '{relation_type_raw}' 清理后为空，跳过此关系。")
+                    continue
+
+                # 从已知的实体类型中获取主体和客体的类型
+                sub_type = known_entities.get(subject_name, "Concept") # 应该已经在上面预填充
+                obj_type = known_entities.get(object_name, "Concept") # 应该已经在上面预填充
 
                 session.write_transaction(
                     create_relationship,
@@ -120,7 +117,7 @@ def import_knowledge_to_neo4j(extracted_knowledge_file, driver):
                     object_name, obj_type
                 )
     print("\n知识图谱导入完成！")
-    driver.close() # 关闭 Neo4j 驱动连接
+    # driver.close() # 通常不在这里关闭驱动，因为你可能希望在程序其他地方继续使用
 
 # --- 示例使用 ---
 if __name__ == "__main__":

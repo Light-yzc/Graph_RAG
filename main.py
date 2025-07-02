@@ -1,8 +1,10 @@
 from Graph_Storge import *
 from Graph_Get_Json import *
 from Graph_Retrieval import *
-
+USERNAME = 'neo4j'
+PASSWORD = 'qwerqwer233'
 driver = None
+URI = 'bolt://localhost:7687'
 try:
     driver = GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD))
     driver.verify_connectivity() # 尝试连接并验证
@@ -31,18 +33,19 @@ else:
 
 # --- 加载 NER 模型 ---
 try:
-    nlp = spacy.load("zh_core_web_sm")
-    print("spaCy zh_core_web_sm loaded successfully.")
+    nlp = spacy.load("zh_core_web_trf")
+    print("spaCy zh_core_web_trf loaded successfully.")
 except Exception as e:
     print(f"Error loading spaCy model: {e}")
-    print("Please run 'python -m spacy download zh_core_web_sm'")
+    print("Please run 'python -m spacy download zh_core_web_trf'")
     nlp = None
 
 sample_txt_path = 'data/sample_document.txt'
 
 
-def Build_base(content_path, nlp, gemini_model):
-    docx_to_txt(content_path, sample_txt_path)
+def Build_base(content_path, sample_txt_path, nlp, gemini_model):
+    # docx_to_txt(content_path, sample_txt_path)
+    docx_to_markdown(content_path, sample_txt_path)
     document_content = load_text_file(sample_txt_path)
     processed_sentences = preprocess_text_optimized_v2(document_content, nlp)
     process_and_save(processed_sentences, nlp, gemini_model)
@@ -51,10 +54,17 @@ def Storge(extracted_path, driver):
     import_knowledge_to_neo4j(extracted_path, driver)
 
 def Search(Sent_to_ask, driver, gemini_model):
-    detailed_schema, schema_error = get_detailed_neo4j_schema(driver)
-    ask_question(Sent_to_ask, detailed_schema, schema_error, gemini_model, driver)
+    enhanced_schema, schema_error = get_enhanced_schema(driver)
+    user_questions_to_ask = Sent_to_ask
+    ask_question(
+    user_questions=user_questions_to_ask,
+    enhanced_schema=enhanced_schema,
+    schema_error=schema_error,
+    gemini_model=gemini_model,
+    neo4j_driver=driver
+        )
+        
 
-
-# Build_base(r"E:\Code\Proj1\data\2024-2027年度重庆联通综合代维服务采购.docx",nlp, gemini_model)
+# Build_base(r"E:\Code\Proj1\data\test.docx", 'data/doc_to_markdown.md', nlp, gemini_model)
 # Storge(r"E:\Code\Proj1\extracted_knowledge.json", driver)
-Search(["我们要维护什么"], driver, gemini_model)
+Search([ "如果我有异议，我该怎么提出？"], driver, gemini_model)
